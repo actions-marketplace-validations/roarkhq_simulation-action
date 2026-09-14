@@ -1,0 +1,190 @@
+name: Claude Code
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+  pull_request:
+    types: [opened, ready_for_review, reopened, synchronize]
+  issues:
+    types: [opened, assigned]
+  pull_request_review:
+    types: [submitted]
+
+jobs:
+  review:
+    if: |
+      github.event_name == 'pull_request' &&
+      !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # Full history so the review can compare against the base branch and
+          # reason about what actually changed.
+          fetch-depth: 0
+
+      - name: PR Review
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          track_progress: true
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
+            Perform a comprehensive review of this pull request.
+
+            This is the Roark Simulation Gate, a composite GitHub Action that
+            runs a Roark voice-agent simulation from a customer's CI and turns
+            the run's verdict into an exit code. It is three files that matter:
+            `action.yml` (the public input/output contract), `scripts/gate.sh`
+            (the whole implementation), and `README.md` (which IS the
+            Marketplace listing). There is no build step and no generated code.
+
+            Two things make this repo unforgiving, and both should shape the
+            review:
+
+            - Consumers pin `@v1`, and the release workflow MOVES that major tag.
+              A change merged here reaches every consumer's pipeline without them
+              upgrading or opting in. There is no staged rollout.
+            - The action spends the customer's money. Each run places real calls
+              that are billed, so a bug that leaks a running simulation is a
+              direct cost to them, not just a broken build.
+
+            1. **Consumer contract and @v1 compatibility (highest priority; merge-blocking)**
+               - `action.yml` inputs and outputs are a public API. Renaming or
+                 removing an input, changing a default, or dropping an output
+                 silently breaks pipelines that never see this repo. Treat any
+                 such change as blocking unless the PR explicitly documents it.
+               - Every `INPUT_*` env var `gate.sh` reads must be supplied by
+                 `action.yml`, and every declared output must actually be emitted
+                 by `gate.sh`. A mismatch yields an empty value at runtime rather
+                 than an error, so it will not fail loudly.
+               - `${{ }}` is expression syntax everywhere in `action.yml`. It is
+                 only valid in `env:`, `outputs.*.value` and `run:`. An expression
+                 in metadata such as an input `description` makes the file fail to
+                 parse, which breaks the action outright before anything executes.
+               - Check the pinned `cli-version` default still resolves to a
+                 published `@roarkanalytics/cli` that carries every command
+                 `gate.sh` invokes.
+
+            2. **Shell correctness in gate.sh (merge-blocking)**
+               - The script runs under `set -euo pipefail` in someone else's
+                 pipeline. Unquoted expansions, word splitting, and assignments
+                 from failing command substitutions are real breakage, not style.
+               - `local out="$(cmd)"` takes `local`'s exit status and masks the
+                 command's; declare and assign on separate lines when the status
+                 matters.
+               - Cleanup paths that run from a `trap` must never change the step's
+                 exit code, and must never abort early under `set -e` before they
+                 have reported what happened.
+               - Never silence a failure. `>/dev/null 2>&1 || true` on a call whose
+                 result the customer depends on hides the one outcome they needed
+                 to see. If a best-effort step fails, say so loudly and continue.
+               - `shellcheck scripts/gate.sh` must stay clean; CI enforces it.
+
+            3. **Gate semantics (merge-blocking)**
+               - The pass/fail decision belongs to Roark. This action transports a
+                 verdict; it must not invent one. Reject logic that infers success
+                 from a status, a score, or a missing field.
+               - A missing or null verdict is never a pass. A gate that silently
+                 goes green is worse than a red build because nobody notices.
+               - `score` is reporting only. Nothing may be gated on it.
+               - Timeouts, cancellation and poll failures each have deliberate
+                 behaviour (neutral exit vs failure, absorbing transient blips).
+                 Check changes preserve those intentions rather than collapsing
+                 them into a generic failure.
+
+            4. **Cost and cleanup safety**
+               - `cancel-on-exit` exists so an abandoned run stops placing billable
+                 calls. Verify a failed cancel is surfaced, not swallowed, and that
+                 the customer is told the run may still be running.
+               - Confirm nothing can leave a run orphaned without a message naming
+                 it and how to stop it.
+
+            5. **Security**
+               - The API token arrives from a secret. It must never be echoed,
+                 written to the step summary, or interpolated into a log line.
+               - Review anything that constructs URLs or shell commands from
+                 inputs for injection.
+
+            6. **Testing**
+               - `.github/workflows/ci.yml` runs shellcheck, validates `action.yml`
+                 metadata, and exercises the pure parsing helpers. New behaviour in
+                 `gate.sh` should come with coverage there.
+               - Prefer tests that need no API key and place no calls.
+
+            7. **Documentation**
+               - `README.md` is the Marketplace listing. New or changed inputs and
+                 outputs belong in its tables.
+               - Check the documented behaviour matches the script, especially
+                 around what fails a build and what does not.
+
+            Provide detailed feedback using inline comments for specific issues.
+
+            After reviewing, post a top-level summary comment on the PR with the following format:
+
+            ## Code Review Summary
+
+            | Category | Score | Notes |
+            |----------|-------|-------|
+            | Consumer Contract (@v1) | X/5 | Brief note |
+            | Shell Correctness | X/5 | Brief note |
+            | Gate Semantics | X/5 | Brief note |
+            | Cost & Cleanup Safety | X/5 | Brief note |
+            | Security | X/5 | Brief note |
+            | Testing | X/5 | Brief note |
+            | Documentation | X/5 | Brief note |
+            | **Overall** | **X/5** | |
+
+            Scoring guide:
+            - 0: Critical issues, must fix before merge
+            - 1: Major issues that should be addressed
+            - 2: Several concerns worth discussing
+            - 3: Acceptable with minor suggestions
+            - 4: Good quality with nitpicks only
+            - 5: Excellent, no issues found
+
+            The overall score cannot exceed the lowest of the Consumer Contract,
+            Shell Correctness and Gate Semantics scores. Follow the score table
+            with:
+            - whether anything in the `action.yml` contract changed, and whether
+              a pipeline pinned to `@v1` keeps working without edits;
+            - any input/output wiring mismatch between `action.yml` and `gate.sh`;
+            - failures that are swallowed rather than reported;
+            - blocking findings and missing test coverage;
+            - a brief list of other key findings.
+          claude_args: |
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git blame:*)"
+
+  claude:
+    if: |
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
+      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
+      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude')) ||
+      (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+      actions: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Run Claude Code
+        id: claude
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
