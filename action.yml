@@ -47,9 +47,9 @@ inputs:
     description: >-
       Hold every check to at least this minimum (0-100) for this pipeline only,
       leaving the run plan untouched. Applied per check, on top of each check's
-      own minimum, so a release branch can demand more than the shared plan.
-      Tightens only: it can fail a run the plan would have passed, never pass one
-      the plan failed.
+      own minimum (80% where a check sets none), so a release branch can demand
+      more than the shared plan. Tightens only: it can fail a run the plan would
+      have passed, never pass one the plan failed.
     required: false
 
   timeout-minutes:
@@ -102,7 +102,7 @@ outputs:
     value: ${{ steps.gate.outputs.plan-id }}
   score:
     description: >-
-      The run's quality score, 0-100: the weighted mean of each check's pass rate.
+      The run's quality score, 0-100: the mean of each check's pass rate.
       Reporting only, for dashboards and trend lines. The pass/fail decision is
       `verdict`, never this: a run can score 95 and fail, or 40 and pass. Empty
       when nothing was evaluated.

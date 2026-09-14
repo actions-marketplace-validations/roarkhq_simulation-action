@@ -190,8 +190,8 @@ trap - INT TERM
 # the plan when it started. Two numbers live on it and only ONE decides anything:
 #
 #   passed  — every check cleared its OWN minimum. This is the exit status.
-#   score   — the weighted mean of the check rates. REPORTING ONLY. A run can
-#             score 95 and fail, or score 40 and pass, so nothing is gated on it.
+#   score   — the mean of the check rates. REPORTING ONLY. A run can score 95 and
+#             fail, or score 40 and pass, so nothing is gated on it.
 verdict="$(printf '%s' "$poll_response" | jq -c '.data.verdict // .verdict // empty')"
 
 if [[ -z "$verdict" || "$verdict" == 'null' ]]; then
@@ -205,7 +205,6 @@ fi
 
 passed="$(printf '%s' "$verdict" | jq -r '.passed')"
 score="$(printf '%s' "$verdict" | jq -r 'if .score == null then empty else (.score * 10 | round) / 10 end')"
-min_pass_rate="$(printf '%s' "$verdict" | jq -r '.minPassRate // empty')"
 checks_total="$(printf '%s' "$verdict" | jq -r '.checks | length')"
 checks_passed="$(printf '%s' "$verdict" | jq -r '[.checks[] | select(.passed)] | length')"
 
@@ -246,7 +245,7 @@ render_failures() {
     if   .type == "RUN_NOT_COMPLETED"        then "- The run did not complete (\(.status)), so there is no result to judge."
     elif .type == "INCOMPLETE_COVERAGE"      then "- Only \(.evaluatedCalls) of \(.expectedCalls) simulations were evaluated, so the run was judged on an incomplete set."
     elif .type == "METRIC_NOT_EVALUATED"     then "- `\(.metricName // .metricDefinitionId)` produced no result on any simulation."
-    elif .type == "METRIC_BELOW_MIN_PASS_RATE" then "- `\(.metricName // .metricDefinitionId)` passed \(.passRate)% of simulations, below \(if .inherited then "the plan default" else "its own minimum" end) of \(.minPassRate)%."
+    elif .type == "METRIC_BELOW_MIN_PASS_RATE" then "- `\(.metricName // .metricDefinitionId)` passed \(.passRate)% of simulations, below \(if .inherited then "the default minimum" else "its own minimum" end) of \(.minPassRate)%."
     else "- \(.type)" end
   '
   # Failures the pipeline's own stricter bar introduced. Reported separately: the
@@ -263,11 +262,11 @@ render_failures() {
 # zero: nothing was measured, rather than everything failing.
 score_line() {
   if [[ -n "$score" ]]; then
-    printf 'score %s%%, %s of %s checks cleared their minimums (plan default %s%%)' \
-      "$score" "$checks_passed" "$checks_total" "$min_pass_rate"
+    printf 'score %s%%, %s of %s checks cleared their minimums' \
+      "$score" "$checks_passed" "$checks_total"
   else
-    printf 'no score (nothing was evaluated), %s of %s checks cleared their minimums (plan default %s%%)' \
-      "$checks_passed" "$checks_total" "$min_pass_rate"
+    printf 'no score (nothing was evaluated), %s of %s checks cleared their minimums' \
+      "$checks_passed" "$checks_total"
   fi
 }
 
