@@ -128,10 +128,28 @@ cancel_run() {
   [[ "$CANCEL_ON_EXIT" == 'true' ]] || return 0
   printf '::warning::Cancelled. Stopping Roark run %s.\n' "$run_id"
   # Called through `roark api` rather than a generated command on purpose: cancel has
-  # no generated verb in every CLI version this action may run against, and a missing
-  # verb fails the same way a network error does, silenced by the `|| true` below. The
-  # raw route is stable and present in every version that can start a run at all.
-  roark api post "/v1/simulation/plan/job/${run_id}/cancel" >/dev/null 2>&1 || true
+  # no generated verb in every CLI version this action may run against, and the raw
+  # route is stable and present in every version that can start a run at all.
+  #
+  # Best-effort, but NOT silent. This runs from a trap, so it must never be the reason
+  # the step fails — every path below returns 0. But it used to discard the outcome
+  # entirely (`>/dev/null 2>&1 || true`), which made a 500, a 404, a missing CLI and a
+  # success all print the same "Stopping Roark run" line. A cancel that quietly failed
+  # leaves the run placing real calls the customer is billed for, which is the one
+  # thing cancel-on-exit exists to prevent, so the outcome is reported either way.
+  #
+  # `local` is declared separately from the assignment: `local out="$(cmd)"` would
+  # take `local`'s own exit status and mask the command's. `|| status=$?` keeps
+  # `set -e` from aborting the trap before the message below is printed.
+  local cancel_output='' cancel_status=0
+  cancel_output="$(roark api post "/v1/simulation/plan/job/${run_id}/cancel" 2>&1)" || cancel_status=$?
+  if ((cancel_status == 0)); then
+    printf '  Roark run %s stopped.\n' "$run_id"
+    return 0
+  fi
+  printf '::error::Could not stop Roark run %s (exit %s). It may still be running, and you are billed for the calls it places. Stop it at %s. Response: %s\n' \
+    "$run_id" "$cancel_status" "$run_url" "$(printf '%s' "$cancel_output" | tr '\n' ' ' | cut -c1-300)"
+  return 0
 }
 trap 'cancel_run; exit 130' INT TERM
 
