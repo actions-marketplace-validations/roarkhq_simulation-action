@@ -6,6 +6,27 @@
 # run plan, so every consumer (this action, the CLI, the dashboard) agrees on
 # whether a run passed. This script only transports that verdict into CI.
 #
+# THREE outcomes, not two. A gate answers exactly one question — "did this change
+# make the agent worse?" — and only a run that actually ran can answer it:
+#
+#   PASSED   every check cleared its own minimum.                        exit 0
+#   FAILED   the run completed cleanly and a check fell short.           exit 1
+#   SKIPPED  the run never produced a judgeable result: a Roark outage,  exit 0
+#            a model-provider blip, sims that died mid-flight, a check
+#            that never ran. Loud, but not merge-blocking.
+#
+# SKIPPED exists because a red build has to mean something. If our own
+# infrastructure can turn a pipeline red, the first thing every team learns is to
+# re-run until green, and from then on nobody reads the gate at all — including
+# the run where the agent really did regress. So our problems are never your
+# problem: we warn, we annotate, we do not block your merge. Set
+# `fail-on-run-error: true` if you would rather hold the line.
+#
+# Operational failures POISON the verdict rather than sitting beside it: a check
+# reported at 40% when half its simulations never ran is not evidence the agent
+# regressed, it is evidence we could not measure. So any operational failure makes
+# the whole run SKIPPED, even when a check also fell short.
+#
 set -euo pipefail
 
 readonly PLAN_ID="${INPUT_PLAN_ID:-}"
@@ -15,7 +36,8 @@ readonly VARIABLES="${INPUT_VARIABLES:-}"
 readonly MIN_PASS_RATE="${INPUT_MIN_PASS_RATE:-}"
 readonly TIMEOUT_MINUTES="${INPUT_TIMEOUT_MINUTES:-30}"
 readonly POLL_INTERVAL="${INPUT_POLL_INTERVAL_SECONDS:-15}"
-readonly FAIL_ON_TIMEOUT="${INPUT_FAIL_ON_TIMEOUT:-true}"
+readonly FAIL_ON_TIMEOUT="${INPUT_FAIL_ON_TIMEOUT:-false}"
+readonly FAIL_ON_RUN_ERROR="${INPUT_FAIL_ON_RUN_ERROR:-false}"
 readonly CANCEL_ON_EXIT="${INPUT_CANCEL_ON_EXIT:-true}"
 readonly PLATFORM_URL="${ROARK_PLATFORM_URL:-https://platform.roark.ai}"
 
@@ -40,6 +62,64 @@ summary() { printf '%s\n' "$1" >>"${GITHUB_STEP_SUMMARY:-/dev/null}"; }
 die() {
   printf '::error::%s\n' "$1"
   exit 1
+}
+
+# Our problem, not yours: the run never produced a judgeable result, so there is no
+# verdict to gate on. Reported loudly (annotation + step summary + `verdict=SKIPPED`,
+# so a workflow can branch on it to notify or retry) and then exits 0.
+#
+# `fail-on-run-error: true` turns this back into a hard failure for teams that would
+# rather block than proceed unmeasured.
+skip() {
+  local reason="$1"
+  # `caller-summary` = the caller already wrote the step summary (the verdict path
+  # has a score line and a failure list to put under the heading). Anything else
+  # means this reason IS the whole report.
+  local summary_owner="${2:-}"
+
+  emit "skip-reason=${reason}"
+
+  # The escape hatch reports FAILED, not SKIPPED. `verdict` is the gate's decision,
+  # and a workflow branching on it must never read "skipped" from a step that went
+  # red; the cause survives in `skip-reason` either way.
+  if [[ "$FAIL_ON_RUN_ERROR" == 'true' ]]; then
+    emit 'verdict=FAILED'
+    if [[ "$summary_owner" != 'caller-summary' ]]; then
+      summary '### Roark simulation could not be judged'
+      summary ''
+      summary "$reason"
+    fi
+    die "${reason} (failing because fail-on-run-error is true)"
+  fi
+
+  emit 'verdict=SKIPPED'
+  if [[ "$summary_owner" != 'caller-summary' ]]; then
+    summary '### Roark simulation skipped'
+    summary ''
+    summary "$reason"
+    if [[ -n "${run_url:-}" ]]; then
+      summary ''
+      summary "[View run](${run_url})"
+    fi
+  fi
+  printf '::warning::Roark could not judge this run, so the gate is not blocking your merge: %s\n' "$reason"
+  # An `if`, not `[[ ... ]] && printf`: under `set -e` a false test as a bare
+  # compound command aborts the function before `exit 0`, turning a skip into a
+  # failed step, which is the one thing this path must never do.
+  if [[ -n "${run_url:-}" ]]; then
+    printf '%s\n' "$run_url"
+  fi
+  exit 0
+}
+
+# Whether a CLI error reads as "we were unreachable" rather than "your request was
+# wrong". Deliberately a text match and deliberately NARROW: the CLI surfaces one
+# non-zero exit for both, and the cost of guessing wrong in each direction is not
+# symmetric. Calling a bad plan-id transient would skip forever and never tell you
+# the id is wrong; calling an outage fatal is one red build. So anything that does
+# not clearly look like 5xx or a dead socket stays fatal.
+is_transient_error() {
+  printf '%s' "$1" | grep -Eqi '(^|[^0-9])(429|50[0-4])([^0-9]|$)|internal server error|bad gateway|service unavailable|gateway timeout|too many requests|socket hang up|fetch failed|network error|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN'
 }
 
 # ─── Validate inputs ─────────────────────────────────────────────────────────
@@ -103,8 +183,15 @@ printf '::group::Starting simulation\n'
 printf '%s\n' "$body" | jq .
 printf '::endgroup::\n'
 
-start_response="$(printf '%s' "$body" | roark simulation run --data @- 2>&1)" ||
+# A start that fails is usually YOUR side (a bad token, an unknown plan-id, a config
+# the API rejects) and those must stay red — a gate that skips on a typo never gates
+# again. Only an error that reads as ours is skipped.
+if ! start_response="$(printf '%s' "$body" | roark simulation run --data @- 2>&1)"; then
+  if is_transient_error "$start_response"; then
+    skip "Roark could not start the simulation: ${start_response}"
+  fi
   die "Failed to start the simulation: ${start_response}"
+fi
 
 run_id="$(printf '%s' "$start_response" | jq -r '.data.simulationRunPlanJobId // .simulationRunPlanJobId // empty')"
 [[ -n "$run_id" ]] || die "Could not read a run id from the API response: ${start_response}"
@@ -169,7 +256,10 @@ while :; do
   if [[ -z "$status" ]]; then
     consecutive_failures=$((consecutive_failures + 1))
     if ((consecutive_failures >= MAX_POLL_FAILURES)); then
-      die "Could not read run ${run_id} after ${MAX_POLL_FAILURES} consecutive attempts: ${poll_response}"
+      # The run itself is probably still fine; we just cannot see it. That is
+      # squarely our problem, and the run is left alone rather than cancelled so
+      # its result is still there to read once we are reachable again.
+      skip "Could not read run ${run_id} after ${MAX_POLL_FAILURES} consecutive attempts: ${poll_response}"
     fi
     printf '::warning::Could not read run %s (attempt %s of %s), retrying.\n' \
       "$run_id" "$consecutive_failures" "$MAX_POLL_FAILURES"
@@ -180,20 +270,17 @@ while :; do
   fi
 
   if ((SECONDS >= deadline)); then
-    emit "verdict=TIMED_OUT"
-    summary "### ⏱ Roark simulation did not finish within ${TIMEOUT_MINUTES} minutes"
-    summary ""
-    summary "Last status: \`${status:-unknown}\` · [View run](${run_url})"
     cancel_run
     if [[ "$FAIL_ON_TIMEOUT" == 'true' ]]; then
+      emit "verdict=TIMED_OUT"
+      summary "### Roark simulation did not finish within ${TIMEOUT_MINUTES} minutes"
+      summary ""
+      summary "Last status: \`${status:-unknown}\` · [View run](${run_url})"
       die "Timed out after ${TIMEOUT_MINUTES} minutes waiting for run ${run_id} (last status: ${status:-unknown})."
     fi
-    # Deliberately not a failure: waiting longer than expected is our problem, and
-    # blocking the merge on it would train people to ignore the gate. A real check
-    # failure still fails, loudly.
-    printf '::warning::Roark simulation timed out after %s minutes (last status: %s). Not failing because fail-on-timeout is false. %s\n' \
-      "$TIMEOUT_MINUTES" "${status:-unknown}" "$run_url"
-    exit 0
+    # Waiting longer than expected is our slowness, not your regression, so it takes
+    # the same non-blocking path as any other unjudgeable run.
+    skip "Roark simulation did not finish within ${TIMEOUT_MINUTES} minutes (last status: ${status:-unknown})."
   fi
 
   sleep "$POLL_INTERVAL"
@@ -213,18 +300,44 @@ trap - INT TERM
 verdict="$(printf '%s' "$poll_response" | jq -c '.data.verdict // .verdict // empty')"
 
 if [[ -z "$verdict" || "$verdict" == 'null' ]]; then
-  # Never treat a missing verdict as a pass — that would make the gate a silent
-  # no-op, which is worse than a red build because nobody notices. Success criteria
-  # are mandatory on every plan, so a null verdict means the plan measures nothing
-  # that produces a pass/fail: it has no boolean metric, and no threshold on any of
-  # the metrics it does collect, so there was nothing to judge.
+  # NOT a skip, deliberately. Every other unjudgeable outcome is our fault and gets
+  # out of your way; this one is a plan that cannot gate anything — it has no boolean
+  # metric and no threshold on the metrics it does collect, so there was nothing to
+  # judge and there never will be. Skipping it would leave a green check next to a
+  # gate that is permanently a no-op, which is worse than red because nobody notices.
   die "This run produced no pass/fail verdict: the run plan has no check to judge. Add a threshold to one of its metrics, or attach a yes/no metric, then re-run. Run: ${run_url}"
 fi
 
 passed="$(printf '%s' "$verdict" | jq -r '.passed')"
+
+# Split the run's failures into the two kinds that mean completely different things.
+#
+#   criteria      — METRIC_BELOW_MIN_PASS_RATE. The run measured your agent and your
+#                   agent fell short. THE ONLY THING THAT TURNS THIS STEP RED.
+#   operational   — everything else: the run did not complete (RUN_NOT_COMPLETED),
+#                   sims dropped out before they were graded (INCOMPLETE_COVERAGE),
+#                   or a check produced no result at all (METRIC_NOT_EVALUATED).
+#                   Roark infrastructure, a model provider, a cloud region: ours.
+#
+# An unknown `type` counts as operational. A failure kind this version of the action
+# has never heard of is one we added after it shipped, and inventing a red build out
+# of a string we cannot read is not a judgement about your agent. It still prints.
+operational_failures="$(printf '%s' "$verdict" | jq -c '[.failures[] | select(.type != "METRIC_BELOW_MIN_PASS_RATE")]')"
+operational_count="$(printf '%s' "$operational_failures" | jq -r 'length')"
 score="$(printf '%s' "$verdict" | jq -r 'if .score == null then empty else (.score * 10 | round) / 10 end')"
 checks_total="$(printf '%s' "$verdict" | jq -r '.checks | length')"
 checks_passed="$(printf '%s' "$verdict" | jq -r '[.checks[] | select(.passed)] | length')"
+
+# One line per operational failure, in the same shape as render_failures below.
+render_operational() {
+  printf '%s' "$operational_failures" | jq -r '
+    .[] |
+    if   .type == "RUN_NOT_COMPLETED"    then "- The run did not complete (\(.status)), so there is no result to judge."
+    elif .type == "INCOMPLETE_COVERAGE"  then "- Only \(.evaluatedCalls) of \(.expectedCalls) simulations were evaluated, so the run was judged on an incomplete set."
+    elif .type == "METRIC_NOT_EVALUATED" then "- `\(.metricName // .metricDefinitionId)` produced no result on any simulation."
+    else "- \(.type)" end
+  '
+}
 
 # A pipeline-level override, applied on top of the server's verdict: the run plan
 # stays the shared baseline while one branch holds itself to a higher bar.
@@ -287,6 +400,26 @@ score_line() {
       "$checks_passed" "$checks_total"
   fi
 }
+
+# Checked BEFORE pass/fail, and before the pipeline's own tightening above had any
+# say: the run could not be measured properly, so it cannot testify about your agent
+# in either direction. A check sitting below its bar on a run that half-collapsed is
+# not a regression, and applying a stricter bar to numbers we do not trust would only
+# invent a more confident wrong answer.
+if ((operational_count > 0)); then
+  summary '### Roark simulation skipped'
+  summary ''
+  summary 'The run did not produce a judgeable result, so there was nothing to gate on.'
+  summary ''
+  render_operational >>"${GITHUB_STEP_SUMMARY:-/dev/null}"
+  summary ''
+  summary "$(score_line)"
+  summary ''
+  summary "[View run](${run_url})"
+  printf 'Roark could not judge this run: %s\n' "$(score_line)"
+  render_operational
+  skip 'The run did not produce a judgeable result, so there was nothing to gate on.' caller-summary
+fi
 
 if [[ "$passed" == 'true' ]]; then
   emit "verdict=PASSED"
