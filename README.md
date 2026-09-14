@@ -17,7 +17,7 @@ Roark decides, not this action. You configure **success criteria** on the run pl
 
 Criteria are pinned to each run when it starts, so editing a plan never rewrites the verdict of a run that already happened.
 
-**Every check is judged on its own.** A check is one pass/fail metric: a yes/no metric, or a threshold on a numeric one. Each must reach its own minimum pass rate across the run, and the run passes only when all of them do.
+**Every check is judged on its own.** A check is one pass/fail metric: a yes/no metric, or a threshold on another metric the plan collects. Each must reach its own minimum pass rate across the run, and the run passes only when all of them do.
 
 | Check | Passed | Rate | Minimum | |
 |---|---|---|---|---|

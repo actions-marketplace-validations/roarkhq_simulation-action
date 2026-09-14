@@ -198,9 +198,9 @@ if [[ -z "$verdict" || "$verdict" == 'null' ]]; then
   # Never treat a missing verdict as a pass — that would make the gate a silent
   # no-op, which is worse than a red build because nobody notices. Success criteria
   # are mandatory on every plan, so a null verdict means the plan measures nothing
-  # that produces a pass/fail: it has no boolean metric and no threshold on a
-  # numeric one, so there was nothing to judge.
-  die "This run produced no pass/fail verdict: the run plan has no check to judge. Add a threshold to a numeric metric, or attach a yes/no metric, then re-run. Run: ${run_url}"
+  # that produces a pass/fail: it has no boolean metric, and no threshold on any of
+  # the metrics it does collect, so there was nothing to judge.
+  die "This run produced no pass/fail verdict: the run plan has no check to judge. Add a threshold to one of its metrics, or attach a yes/no metric, then re-run. Run: ${run_url}"
 fi
 
 passed="$(printf '%s' "$verdict" | jq -r '.passed')"
