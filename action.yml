@@ -11,8 +11,8 @@ branding:
 inputs:
   api-token:
     description: >-
-      Roark API key. Store it as a repository secret and pass
-      ${{ secrets.ROARK_API_KEY }}; never inline it. Needs the SIMULATION_RUN
+      Roark API key. Store it as a repository secret and pass it as
+      secrets.ROARK_API_KEY; never inline it. Needs the SIMULATION_RUN
       permission plus read access to the run and its metrics.
     required: true
 
