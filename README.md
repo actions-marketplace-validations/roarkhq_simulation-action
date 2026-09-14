@@ -30,13 +30,17 @@ That is the whole decision. There is no pooled average to clear: averaging would
 
 ### Minimums
 
-The plan sets one **default minimum** that every check inherits, and any check can override it with its own (*"silence duration only has to clear 40%"*). A check is judged against its override when it has one, otherwise the default. Nothing else affects pass or fail.
+Every check carries **its own minimum**, expressed as the share of the run's simulations that have to pass it. A check that sets none is held to **80%**.
+
+Read a minimum as a count, because that is what it comes to: on a 10-simulation run, `50%` means *5 of 10 simulations need to pass*, and `80%` means *8 of 10*. Counts round up, since a check clears its bar only when its rate is at or above it: 7 of 9 is 77.8%, which misses 80%.
+
+There is no plan-wide bar on top of that. One number for a whole plan is either too strict for the loose checks or too loose for the strict ones, so each check says what it needs and nothing else affects pass or fail.
 
 ### Score is not the decision
 
-The run also reports a **score**: the weighted mean of the check rates, using the optional `weight` on each metric. It is for dashboards and trend lines only.
+The run also reports a **score**: the mean of the check rates. It is for dashboards and trend lines only.
 
-Nothing is gated on it, and you should not gate on it either. A run can score 95 and fail (one non-negotiable check missed its bar) or score 40 and pass (every check cleared a deliberately low bar). Weight shapes the score; it never rescues or sinks a check. Setting a weight to `0` drops a check from the score while still holding it to its minimum.
+Nothing is gated on it, and you should not gate on it either. A run can score 95 and fail (one non-negotiable check missed its bar) or score 40 and pass (every check cleared a deliberately low bar).
 
 A run **fails** when it did not complete, when a check never ran, when some calls dropped out of scoring, or when any check is below its minimum. None of those pass silently, and a run with no verdict at all fails rather than going quietly green.
 ## Usage
@@ -79,14 +83,12 @@ flows:
     edgeCases: ALL
 metrics:
   - slug: agent_containment
-    # No minPassRate, so it inherits the default below.
+    # No minPassRate, so this check is held to the 80% default.
   - slug: latency
-    minPassRate: 12    # this check only has to clear 12%
-    weight: 0          # ... and is left out of the reported score entirely
+    minPassRate: 12    # this check only has to clear 12% of simulations
   - slug: leaked_pii
-    expectedBooleanValue: false    # this check passes when the answer is FALSE
-successCriteria:
-  minPassRate: 90    # the default every check above is held to on its own
+    minPassRate: 100               # ... while this one must pass every simulation
+    expectedBooleanValue: false    # and it passes when the answer is FALSE
 ```
 
 ```yaml
@@ -116,8 +118,9 @@ then on:
 ### Hold one branch to a higher bar
 
 `min-pass-rate` holds every check to at least that minimum for this pipeline only, leaving
-the shared plan alone. It is applied per check, on top of each check's own minimum, so a
-release branch can demand more than the plan without touching it.
+the shared plan alone. It is applied per check, on top of each check's own minimum (80%
+where a check sets none), so a release branch can demand more than the plan without
+touching it.
 
 It can only tighten: it will not let through a run the plan's own criteria failed, because
 overruling a minimum the plan's owner set is not something a pipeline gets to do.
