@@ -64,11 +64,23 @@ inputs:
 
   fail-on-timeout:
     description: >-
-      What to do when the run does not finish in time. `true` fails the step.
-      `false` exits neutral, so our own slowness does not block your merge while
-      a genuine check failure still does.
+      What to do when the run does not finish in time. `false` (the default)
+      exits neutral with a warning, so our own slowness does not block your
+      merge while a genuine check failure still does. `true` fails the step.
     required: false
-    default: 'true'
+    default: 'false'
+
+  fail-on-run-error:
+    description: >-
+      What to do when the run could not be judged at all: a Roark outage, a
+      model-provider error, simulations that died before they were graded, or a
+      check that produced no result. `false` (the default) reports the step as
+      skipped with a warning and exits neutral, because a problem on our side is
+      not evidence about your agent, and a gate that can go red for our reasons
+      is one people learn to re-run until green. `true` fails the step instead,
+      for pipelines that would rather block than proceed unmeasured.
+    required: false
+    default: 'false'
 
   cancel-on-exit:
     description: >-
@@ -114,8 +126,18 @@ outputs:
     description: 'How many checks the run was judged on.'
     value: ${{ steps.gate.outputs.checks-total }}
   verdict:
-    description: 'PASSED, FAILED, or TIMED_OUT.'
+    description: >-
+      The gate's decision: PASSED, FAILED, SKIPPED, or TIMED_OUT. FAILED means
+      the run completed cleanly and a check fell short, which is the only thing
+      that turns this step red by default. SKIPPED means the run never produced
+      a judgeable result, so there was nothing to gate on.
     value: ${{ steps.gate.outputs.verdict }}
+  skip-reason:
+    description: >-
+      Why the run could not be judged, set only when `verdict` is SKIPPED (or
+      when `fail-on-run-error` turned that same condition into a FAILED). Empty
+      on a run that was judged.
+    value: ${{ steps.gate.outputs.skip-reason }}
 
 runs:
   using: 'composite'
@@ -141,4 +163,5 @@ runs:
         INPUT_TIMEOUT_MINUTES: ${{ inputs.timeout-minutes }}
         INPUT_POLL_INTERVAL_SECONDS: ${{ inputs.poll-interval-seconds }}
         INPUT_FAIL_ON_TIMEOUT: ${{ inputs.fail-on-timeout }}
+        INPUT_FAIL_ON_RUN_ERROR: ${{ inputs.fail-on-run-error }}
         INPUT_CANCEL_ON_EXIT: ${{ inputs.cancel-on-exit }}

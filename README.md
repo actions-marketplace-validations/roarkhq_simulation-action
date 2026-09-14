@@ -42,7 +42,28 @@ The run also reports a **score**: the mean of the check rates. It is for dashboa
 
 Nothing is gated on it, and you should not gate on it either. A run can score 95 and fail (one non-negotiable check missed its bar) or score 40 and pass (every check cleared a deliberately low bar).
 
-A run **fails** when it did not complete, when a check never ran, when some calls dropped out of scoring, or when any check is below its minimum. None of those pass silently, and a run with no verdict at all fails rather than going quietly green.
+### Only your agent can turn the build red
+
+A gate answers one question: **did this change make the agent worse?** Only a run that actually ran can answer it, so this action has three outcomes, not two.
+
+| Outcome | When | Exit |
+|---|---|---|
+| **PASSED** | Every check cleared its own minimum. | 0 |
+| **FAILED** | The run completed cleanly and a check fell short. | **1** |
+| **SKIPPED** | The run never produced a judgeable result: a Roark outage, a model-provider error, simulations that died before they were graded, a check that produced no result. | 0, with a warning |
+
+A check falling below its minimum is the **only** thing that fails your build. Our problems are never your problem: they are annotated loudly, reported as `verdict: SKIPPED` with a `skip-reason`, and then they get out of your way.
+
+That is a deliberate trade. If our infrastructure can turn your pipeline red, the first thing your team learns is to re-run until green, and from then on nobody reads the gate at all, including on the run where the agent really did regress. A red build has to mean something.
+
+Operational problems **poison** the verdict rather than sitting beside it. If half a run's simulations never completed, a check reported at 40% is not evidence of a regression, it is evidence we could not measure. So any operational failure makes the whole run `SKIPPED`, even when a check also fell short.
+
+Two exceptions, both deliberate:
+
+- **A plan with no checks still fails.** That is not our outage, it is a plan that can never gate anything, and skipping it would leave a green check next to a permanent no-op.
+- **A rejected request still fails.** A bad token, an unknown `plan-id` or a config the API refuses is your side, and a gate that skips on a typo never gates again. Only errors that read as ours (5xx, rate limits, dead sockets) are skipped.
+
+Set `fail-on-run-error: true` if you would rather block than proceed unmeasured.
 ## Usage
 
 ### Run a saved plan
@@ -145,7 +166,8 @@ overruling a minimum the plan's owner set is not something a pipeline gets to do
 | `min-pass-rate` | no | | Hold every check to at least this minimum (0-100) for this pipeline. Tightens only. |
 | `timeout-minutes` | no | `30` | How long to wait for the run. |
 | `poll-interval-seconds` | no | `15` | How often to check for completion. |
-| `fail-on-timeout` | no | `true` | `false` warns instead of failing when the run overruns. |
+| `fail-on-timeout` | no | `false` | `true` fails the build when the run overruns instead of warning. |
+| `fail-on-run-error` | no | `false` | `true` fails the build when the run could not be judged (outage, dead simulations, a check that never ran) instead of skipping. |
 | `cancel-on-exit` | no | `true` | Stop the Roark run when the workflow is cancelled or the wait times out. |
 | `cli-version` | no | pinned | Version of `@roarkanalytics/cli` to run. |
 | `api-base-url` | no | `https://api.roark.ai` | Override the API base URL. |
@@ -160,7 +182,8 @@ overruling a minimum the plan's owner set is not something a pipeline gets to do
 | `score` | The run's quality score, 0-100. Reporting only: gate on `verdict`, never this. |
 | `checks-passed` | How many checks cleared their own minimum. |
 | `checks-total` | How many checks the run was judged on. |
-| `verdict` | `PASSED`, `FAILED`, or `TIMED_OUT`. |
+| `verdict` | `PASSED`, `FAILED`, `SKIPPED`, or `TIMED_OUT`. |
+| `skip-reason` | Why the run could not be judged. Set only alongside `SKIPPED`; empty on a run that was judged. |
 
 ## Simulations take minutes
 
@@ -168,7 +191,7 @@ Real calls take real time, so a gated run occupies a runner while it waits. Four
 keep that cheap and predictable:
 
 - **Run it where it matters.** Gate `main` or your release branch rather than every push to every branch.
-- **Don't let our slowness block your merge.** `fail-on-timeout: false` turns an overrun into a warning, while a genuine check failure still fails the build.
+- **Our slowness already does not block your merge.** An overrun is a warning by default (`fail-on-timeout: false`), like every other problem on our side, while a genuine check failure still fails the build.
 - **Cancel superseded runs.** A `concurrency` group stops an old push from holding a runner while a newer one is already testing the same branch. The action cancels the Roark run too, so the abandoned simulation stops placing calls you would otherwise be billed for.
 - **Keep a job-level backstop.** `timeout-minutes` on the job is the last line of defence if the step itself wedges.
 
