@@ -41,7 +41,7 @@ jobs:
 
             Perform a comprehensive review of this pull request.
 
-            This is the Roark Simulation Gate, a composite GitHub Action that
+            This is `roarkhq/simulation-action`, a composite GitHub Action that
             runs a Roark voice-agent simulation from a customer's CI and turns
             the run's verdict into an exit code. It is three files that matter:
             `action.yml` (the public input/output contract), `scripts/gate.sh`
