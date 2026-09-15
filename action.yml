@@ -1,6 +1,6 @@
 # Marketplace requires this file at the repository root, and the `name` to be
 # globally unique across Marketplace listings, GitHub orgs and reserved names.
-name: 'Roark Simulation Gate'
+name: 'Roark'
 description: 'Run a Roark voice-agent simulation and gate your pipeline on the result.'
 author: 'Roark'
 

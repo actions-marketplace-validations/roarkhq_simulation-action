@@ -1,4 +1,4 @@
-# Roark Simulation Gate
+# Roark
 
 Run a [Roark](https://roark.ai) voice-agent simulation from CI and gate the pipeline on the result.
 
