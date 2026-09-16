@@ -146,7 +146,20 @@ runs:
     # pipeline on `@v1` does without us bumping it deliberately.
     - name: Install Roark CLI
       shell: bash
-      run: npm install --global --no-fund --no-audit "@roarkanalytics/cli@${{ inputs.cli-version }}"
+      run: |
+        set -euo pipefail
+        # NOT a global install. The CLI declares ~80 man pages, and `npm i -g` links
+        # every one of them into /usr/local/share/man, which the runner user cannot
+        # write: on ubuntu-latest the step dies with EACCES before the gate ever runs.
+        # Requiring sudo to install a CLI is not a fix either, since self-hosted and
+        # container runners often do not have it.
+        #
+        # A private prefix under RUNNER_TEMP installs the same package with no
+        # privileges, leaves nothing behind on a reused runner, and puts `roark` on
+        # PATH for the steps that follow.
+        prefix="${RUNNER_TEMP:-$(mktemp -d)}/roark-cli"
+        npm install --prefix "$prefix" --no-fund --no-audit --no-save "@roarkanalytics/cli@${{ inputs.cli-version }}"
+        printf '%s\n' "${prefix}/node_modules/.bin" >>"$GITHUB_PATH"
 
     - name: Run simulation and gate
       id: gate
