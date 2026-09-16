@@ -108,9 +108,14 @@ metrics:
   - slug: latency
     minPassRate: 12    # this check only has to clear 12% of simulations
   - slug: leaked_pii
-    minPassRate: 100               # ... while this one must pass every simulation
-    expectedBooleanValue: false    # and it passes when the answer is FALSE
+    minPassRate: 100   # ... while this one must pass every simulation
 ```
+
+Only `minPassRate` is set here, because the bar is the only thing a plan gets to say about a
+check. What counts as passing one simulation belongs to the metric itself: a "did the agent
+leak PII?" check passes on FALSE because it carries a threshold of `EQUALS false`, stated once
+in Roark rather than re-stated by every plan that uses it. The API rejects unrecognised keys,
+so a stray flag here fails the run rather than being quietly ignored.
 
 ```yaml
       - uses: actions/checkout@v4
