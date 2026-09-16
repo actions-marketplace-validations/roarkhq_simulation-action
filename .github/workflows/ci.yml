@@ -64,3 +64,32 @@ jobs:
           [ "$(run '' '')" = '1' ] || { echo 'expected failure when neither input is set'; exit 1; }
           [ "$(run 'a-plan' 'a-file.yml')" = '1' ] || { echo 'expected failure when both are set'; exit 1; }
           echo 'input validation OK'
+
+  cli-install:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The step that broke: `npm i -g` links the CLI's ~80 man pages into
+      # /usr/local/share/man and dies with EACCES on a GitHub runner, so the action
+      # never reached the gate at all. Installing it here, exactly as action.yml does
+      # and at the version action.yml pins, is the only way that class of bug shows up
+      # before a customer's pipeline hits it.
+      - name: Install the pinned CLI the way the action does
+        run: |
+          set -euo pipefail
+          version="$(python3 -c "import yaml; print(yaml.safe_load(open('action.yml'))['inputs']['cli-version']['default'])")"
+          prefix="${RUNNER_TEMP}/roark-cli"
+          npm install --prefix "$prefix" --no-fund --no-audit --no-save "@roarkanalytics/cli@${version}"
+          printf '%s\n' "${prefix}/node_modules/.bin" >>"$GITHUB_PATH"
+          echo "installed @roarkanalytics/cli@${version}"
+
+      # Not just `--version`: the gate calls these two, so a CLI that dropped either
+      # would pass a version check and still fail on the first real run.
+      - name: The commands the gate depends on exist
+        run: |
+          set -euo pipefail
+          roark --version
+          roark simulation run --help | grep -q -- '--data'
+          roark api post --help >/dev/null
+          echo 'CLI surface OK'
