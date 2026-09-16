@@ -1,6 +1,11 @@
 # Marketplace requires this file at the repository root, and the `name` to be
 # globally unique across Marketplace listings, GitHub orgs and reserved names.
-name: 'Roark'
+#
+# Not plain 'Roark': the GitHub user github.com/roark already holds that name, so
+# publishing is rejected with "Name must be unique. Cannot match an existing
+# action, user or organization name." The suffix is what makes it publishable —
+# shortening it back re-breaks the listing.
+name: 'Roark AI'
 description: 'Run a Roark voice-agent simulation and gate your pipeline on the result.'
 author: 'Roark'
 
