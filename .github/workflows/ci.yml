@@ -84,12 +84,31 @@ jobs:
           printf '%s\n' "${prefix}/node_modules/.bin" >>"$GITHUB_PATH"
           echo "installed @roarkanalytics/cli@${version}"
 
-      # Not just `--version`: the gate calls these two, so a CLI that dropped either
-      # would pass a version check and still fail on the first real run.
+      # Not just `--version`: the gate calls these three, so a CLI that dropped any
+      # of them would pass a version check and still fail on the first real run.
+      #
+      # Each help text is captured in full before being matched. Piping the CLI into
+      # `grep -q` races it: grep exits on the first match, and whatever the CLI
+      # writes next hits a closed pipe, which it reports as an unhandled EPIPE and
+      # a non-zero exit that `pipefail` then turns into a red build. Nothing is
+      # wrong with the CLI when that happens, so the check must not be able to
+      # produce that signal.
       - name: The commands the gate depends on exist
         run: |
           set -euo pipefail
           roark --version
-          roark simulation run --help | grep -q -- '--data'
+
+          run_help="$(roark simulation run --help)"
+          grep -q -- '--data' <<<"$run_help" || {
+            echo '::error::`roark simulation run` no longer accepts --data'
+            exit 1
+          }
+
+          poll_help="$(roark simulation plan job get --help)"
+          grep -q -- 'job-id' <<<"$poll_help" || {
+            echo '::error::`roark simulation plan job get` no longer takes a job id'
+            exit 1
+          }
+
           roark api post --help >/dev/null
           echo 'CLI surface OK'
